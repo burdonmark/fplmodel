@@ -1,0 +1,67 @@
+---
+title: "FPL modelling"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(fplscrapR)
+```
+
+```{r}
+diamond_dogs <- 3592433
+leonard_nuthouse_id <- 755179
+
+df_league <- get_league_entries(leagueid = leonard_nuthouse_id, leaguetype = "classic")
+
+```
+
+```{r}
+picks <- get_entry_picks(entryid=diamond_dogs, gw=20)$picks
+
+df <- get_player_info() %>%
+  select(id, playername, ep_next) %>%
+  mutate("element"=id, ep_next = as.numeric(ep_next))
+
+
+```
+
+```{r}
+df2 <- left_join(picks,df,by="element") %>% select(playername,is_captain,is_vice_captain,ep_next)
+
+df2$ep_next |> sum()
+```
+
+```{r}
+fplscrapR::get_league_entries(leonard_nuthouse)
+```
+
+```{r}
+#player_details <- get_player_details()
+#save(player_details, file=  "player_details.Rdata")
+load(player_details)
+```
+
+```{r}
+pd2 <- player_details |>
+   group_by(element) |>
+  arrange(kickoff_time) |>
+  mutate(prev_points_1 = dplyr::lag(total_points, n = 1),
+         prev_points_2 = dplyr::lag(total_points, n = 2),
+         prev_points_3 = dplyr::lag(total_points, n = 3),
+         prev_points_4 = dplyr::lag(total_points, n = 4),
+         prev_points_5 = dplyr::lag(total_points, n = 5),
+         average_last5 = mean(c(prev_points_1, prev_points_2, prev_points_3, prev_points_4, prev_points_5), na.rm = TRUE),
+         average_points = mean(total_points, na.rm = TRUE))
+```
+
+```{r}
+#element_type in get_player_info is position
+```
+
+```{r}
+lm4 <- lm(total_points ~ average_points +  prev_points_1 + prev_points_2 + prev_points_3  + was_home, data = pd2)
+
+summary(lm4)
+```
