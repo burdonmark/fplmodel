@@ -29,6 +29,10 @@ leonard_nuthouse_id <- 755179
 pd2 <- player_details |>
    group_by(element) |>
   arrange(kickoff_time) |>
+  mutate(points_cat = case_when(total_points < 1 ~ "Zero",
+                                total_points > 0 & total_points < 3 ~ "Blank",
+                                total_points > 2 & total_points < 7 ~ "Return",
+                                total_points > 6 ~ "Haul")) |>
   mutate(prev_points_1 = dplyr::lag(total_points, n = 1),
          prev_points_2 = dplyr::lag(total_points, n = 2),
          prev_points_3 = dplyr::lag(total_points, n = 3),
@@ -75,7 +79,7 @@ model_df <- player_df |>
   mutate(position = case_when(position == 1 ~ "GK", position == 2 ~ "DEF", position == 3 ~ "MID", position == 4 ~ "FWD")) |>
    mutate(was_home = factor(was_home)) |>
   mutate(prev_ict = as.numeric(prev_ict)) |>
-  select(element,fixture, round,playername, total_points, position, team_name, opp_team_name, was_home,  starts_with("prev"), starts_with("average")) 
+  select(element,fixture, points_cat, round,playername, total_points, position, team_name, opp_team_name, was_home,  starts_with("prev"), starts_with("average")) 
 
 ```
 
@@ -123,7 +127,7 @@ df_test <- testing(splits)
 ```
 
 ```{r}
-xgb_recipe <- recipe(total_points ~ position + team_name + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + prev_minutes_3 + prev_minutes_4 + prev_points_3 + prev_points_4 + prev_points_5 + average_points5 + average_minutes5, data = df_train) |> 
+xgb_recipe <- recipe(points_cat ~ position + team_name + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + prev_minutes_3 + prev_minutes_4 + prev_points_3 + prev_points_4 + prev_points_5 + average_points5 + average_minutes5, data = df_train) |> 
   step_center(all_numeric(), -all_outcomes()) |>
   step_scale(all_numeric(), -all_outcomes()) |> 
   step_dummy(all_nominal(), -all_outcomes())
@@ -137,8 +141,9 @@ xgb_model <- boost_tree(
   trees = 1000,
   mtry = 0.9
 ) |>
-  set_mode("regression") |>
-  set_engine("xgboost",  
+  set_mode("classification") |>
+  set_engine("xgboost", 
+             objective = "multi:softprob",
              verbose = 2, 
              nthread = 4,
              counts = FALSE)
@@ -161,14 +166,19 @@ fitted_workflow <- fit(object = xgb_wf, data =  df_train,
 ```{r}
 pred <- predict(fitted_workflow, df_test)
 
-df_test$pred <- pred$.pred
+df_test$pred <- pred$.pred_class
+df_test$points_cat <- factor(df_test$points_cat)
 
 
-metrics(df_test, truth= total_points, estimate = pred)
+metrics(df_test, truth= factor(points_cat), estimate = factor(pred))
 ```
+
+\
+
 ```{r}
 df_test |> ggplot(aes(x = total_points, y = pred)) +geom_point(alpha = 0.3) + geom_abline(slope = 1)
 ```
+
 ```{r}
 xgb_model_ext <- extract_fit_engine(fitted_workflow)
 varimp <- xgboost::xgb.importance(feature_names = fitted_workflow$fit$fit$fit$feature_names, 
@@ -187,4 +197,3 @@ varimp_plot <- varimp|>
 
 varimp_plot
 ```
-
