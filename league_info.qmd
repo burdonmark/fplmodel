@@ -1,0 +1,27 @@
+---
+title: "league_stats"
+format: html
+editor: visual
+---
+
+```{r}
+diamond_dogs <- 3592433
+leonard_nuthouse_id <- 755179
+
+df_league <- get_league_entries(leagueid = leonard_nuthouse_id, leaguetype = "classic")
+```
+
+```{r}
+picks <- get_entry_picks(entryid=diamond_dogs, gw=20)$picks
+
+df <- get_player_info() %>%
+  select(id, playername, ep_next) %>%
+  mutate("element"=id, ep_next = as.numeric(ep_next))
+
+df2 <- left_join(picks,df,by="element") %>% select(playername,is_captain,is_vice_captain,ep_next)
+
+df2$ep_next |> sum()
+
+
+fplscrapR::get_league_entries(leonard_nuthouse)
+```

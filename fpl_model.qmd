@@ -7,40 +7,22 @@ editor: visual
 ```{r}
 library(tidyverse)
 library(fplscrapR)
+library(tidymodels)
+library(bayesian)
+library(brms)
+library(xgboost)
 ```
 
 ```{r}
 diamond_dogs <- 3592433
 leonard_nuthouse_id <- 755179
 
-df_league <- get_league_entries(leagueid = leonard_nuthouse_id, leaguetype = "classic")
-
-```
-
-```{r}
-picks <- get_entry_picks(entryid=diamond_dogs, gw=20)$picks
-
-df <- get_player_info() %>%
-  select(id, playername, ep_next) %>%
-  mutate("element"=id, ep_next = as.numeric(ep_next))
-
-
-```
-
-```{r}
-df2 <- left_join(picks,df,by="element") %>% select(playername,is_captain,is_vice_captain,ep_next)
-
-df2$ep_next |> sum()
-```
-
-```{r}
-fplscrapR::get_league_entries(leonard_nuthouse)
 ```
 
 ```{r}
 #player_details <- get_player_details()
 #save(player_details, file=  "player_details.Rdata")
-load(player_details)
+  load("player_details.Rdata")
 ```
 
 ```{r}
@@ -52,16 +34,157 @@ pd2 <- player_details |>
          prev_points_3 = dplyr::lag(total_points, n = 3),
          prev_points_4 = dplyr::lag(total_points, n = 4),
          prev_points_5 = dplyr::lag(total_points, n = 5),
-         average_last5 = mean(c(prev_points_1, prev_points_2, prev_points_3, prev_points_4, prev_points_5), na.rm = TRUE),
-         average_points = mean(total_points, na.rm = TRUE))
+         average_points5 = mean(c(prev_points_1, prev_points_2, prev_points_3, prev_points_4, prev_points_5), na.rm = TRUE),
+         prev_minutes_1 = dplyr::lag(minutes, n = 1),
+         prev_minutes_2 = dplyr::lag(minutes, n = 2),
+         prev_minutes_3 = dplyr::lag(minutes, n = 3),
+         prev_minutes_4 = dplyr::lag(minutes, n = 4),
+         prev_minutes_5 = dplyr::lag(minutes, n = 5),
+         average_minutes5 = mean(c(prev_minutes_1, prev_minutes_2, prev_minutes_3, prev_minutes_4, prev_minutes_5), na.rm = TRUE),
+         prev_ict = dplyr::lag(ict_index, n = 1),
+         prev_value = dplyr::lag(value, n = 1),
+         prev_starts = dplyr::lag(starts, n = 1))
 ```
 
 ```{r}
 #element_type in get_player_info is position
+player_info <- get_player_info()
+
+player_info_sel <- player_info |>
+  select(playername, team_code, "position" = element_type)
+
+
 ```
 
 ```{r}
-lm4 <- lm(total_points ~ average_points +  prev_points_1 + prev_points_2 + prev_points_3  + was_home, data = pd2)
-
-summary(lm4)
+teams <- get_fdr() |> select("team_code" = code,
+                             "team_name" = short_name,
+                             "team_id" = id)
+teams_opp <- teams |>
+  rename("opp_team_name" = team_name)
 ```
+
+```{r}
+player_df <- left_join(pd2, player_info_sel) |> 
+  left_join(teams, by = "team_code") |>
+  left_join(teams_opp, by = c("opponent_team" = "team_id")) 
+
+model_df <- player_df |>
+  ungroup() |>
+    filter(average_minutes5 > 30, selected > 5000) |>
+  mutate(position = case_when(position == 1 ~ "GK", position == 2 ~ "DEF", position == 3 ~ "MID", position == 4 ~ "FWD")) |>
+   mutate(was_home = factor(was_home)) |>
+  mutate(prev_ict = as.numeric(prev_ict)) |>
+  select(element,fixture, round,playername, total_points, position, team_name, opp_team_name, was_home,  starts_with("prev"), starts_with("average")) 
+
+```
+
+```{r}
+m1 <- model_df |> lm(formula = total_points ~ position + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5)
+
+summary(m1)
+
+
+m2 <- model_df |> filter(total_points > -1) |>glm(formula = total_points ~ position + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5, family = "poisson")
+
+m3 <- model_df |> lmerTest::lmer(formula = total_points ~ position + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5 + (1 | team_name) + (1 | opp_team_name))
+```
+
+```{r}
+m1_pred <-predictions(m1)
+m2_pred <-predictions(m2)
+m3_pred <-predictions(m3)
+m1_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point(alpha = 0.4) + geom_abline(slope = 1, intercept = 0)
+
+m2_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point()+ geom_smooth()
+
+m3_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point(alpha = 0.4) + geom_abline(slope = 1, intercept = 0)
+```
+
+```{r}
+metrics(m1_pred, truth = total_points, estimate = estimate)
+metrics(m3_pred, truth = total_points, estimate = estimate)
+```
+
+```{r}
+
+model_df |>
+  filter(round == max(round)) |>
+ggplot(aes(x = average_minutes5, y = total_points)) +
+  geom_point(alpha = 0.6)
+```
+
+```{r}
+set.seed(123)
+splits <- initial_split(model_df, prop = 0.8, strata = round)
+
+df_train <- training(splits)
+df_test <- testing(splits)
+```
+
+```{r}
+xgb_recipe <- recipe(total_points ~ position + team_name + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + prev_minutes_3 + prev_minutes_4 + prev_points_3 + prev_points_4 + prev_points_5 + average_points5 + average_minutes5, data = df_train) |> 
+  step_center(all_numeric(), -all_outcomes()) |>
+  step_scale(all_numeric(), -all_outcomes()) |> 
+  step_dummy(all_nominal(), -all_outcomes())
+
+
+```
+
+```{r}
+xgb_model <- boost_tree(
+  tree_depth = 7,
+  trees = 1000,
+  mtry = 0.9
+) |>
+  set_mode("regression") |>
+  set_engine("xgboost",  
+             verbose = 2, 
+             nthread = 4,
+             counts = FALSE)
+```
+
+```{r}
+#Set up workflow
+xgb_wf <- workflow() |>
+  add_model(xgb_model) |> 
+  add_recipe(xgb_recipe)
+
+```
+
+```{r}
+fitted_workflow <- fit(object = xgb_wf, data =  df_train,
+                         control = control_workflow(control_parsnip = control_parsnip(verbosity = 2L)))
+
+```
+
+```{r}
+pred <- predict(fitted_workflow, df_test)
+
+df_test$pred <- pred$.pred
+
+
+metrics(df_test, truth= total_points, estimate = pred)
+```
+```{r}
+df_test |> ggplot(aes(x = total_points, y = pred)) +geom_point(alpha = 0.3) + geom_abline(slope = 1)
+```
+```{r}
+xgb_model_ext <- extract_fit_engine(fitted_workflow)
+varimp <- xgboost::xgb.importance(feature_names = fitted_workflow$fit$fit$fit$feature_names, 
+                                        model = xgb_model_ext)
+# Top 20 plot
+varimp_plot <- varimp|>
+  as_tibble() |>
+  arrange(desc(Gain)) |>
+  filter(row_number() <= 10) |>
+  ggplot(aes(x = reorder(Feature, Gain), y = Gain, fill = Gain)) +
+  geom_col() +
+    geom_text(aes(label = round(Gain, 2)), nudge_y = 0.03) +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_viridis_c()
+
+varimp_plot
+```
+
