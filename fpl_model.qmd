@@ -27,6 +27,10 @@ leonard_nuthouse_id <- 755179
 
 ```{r}
 pd2 <- player_details |>
+  mutate(across(starts_with("expected"), as.numeric)) |>
+  mutate(ict_index = as.numeric(ict_index))
+
+pd2  <- pd2 |>
    group_by(element) |>
   arrange(kickoff_time) |>
   mutate(points_cat = case_when(total_points < 1 ~ "Zero",
@@ -38,7 +42,31 @@ pd2 <- player_details |>
          prev_points_3 = dplyr::lag(total_points, n = 3),
          prev_points_4 = dplyr::lag(total_points, n = 4),
          prev_points_5 = dplyr::lag(total_points, n = 5),
-         average_points5 = mean(c(prev_points_1, prev_points_2, prev_points_3, prev_points_4, prev_points_5), na.rm = TRUE),
+         
+         
+         prev_xG_1 = dplyr::lag(expected_goals, n = 1),
+         prev_xG_2 = dplyr::lag(expected_goals, n = 2),
+         prev_xG_3 = dplyr::lag(expected_goals, n = 3),
+         prev_xG_4 = dplyr::lag(expected_goals, n = 4),
+         prev_xG_5 = dplyr::lag(expected_goals, n = 5),
+         
+         prev_xGI_1 = dplyr::lag(expected_goal_involvements, n = 1),
+         prev_xGI_2 = dplyr::lag(expected_goal_involvements, n = 2),
+         prev_xGI_3 = dplyr::lag(expected_goal_involvements, n = 3),
+         prev_xGI_4 = dplyr::lag(expected_goal_involvements, n = 4),
+         prev_xGI_5 = dplyr::lag(expected_goal_involvements, n = 5),
+         
+         prev_xGC_1 = dplyr::lag(expected_goals_conceded, n = 1),
+         prev_xGC_2 = dplyr::lag(expected_goals_conceded, n = 2),
+         prev_xGC_3 = dplyr::lag(expected_goals_conceded, n = 3),
+         prev_xGC_4 = dplyr::lag(expected_goals_conceded, n = 4),
+         prev_xGC_5 = dplyr::lag(expected_goals_conceded, n = 5),   
+         
+         average_xG5 = mean(c(prev_xG_1, prev_xG_2, prev_xG_3, prev_xG_4, prev_xG_5)),
+                  average_xGI5 = mean(c(prev_xGI_1, prev_xGI_2, prev_xGI_3, prev_xGI_4, prev_xGI_5)),
+                           average_xGC5 = mean(c(prev_xGC_1, prev_xGC_2, prev_xGC_3, prev_xGC_4, prev_xGC_5)),
+         
+               average_points5 = mean(c(prev_points_1, prev_points_2, prev_points_3, prev_points_4, prev_points_5), na.rm = TRUE),
          prev_minutes_1 = dplyr::lag(minutes, n = 1),
          prev_minutes_2 = dplyr::lag(minutes, n = 2),
          prev_minutes_3 = dplyr::lag(minutes, n = 3),
@@ -47,7 +75,8 @@ pd2 <- player_details |>
          average_minutes5 = mean(c(prev_minutes_1, prev_minutes_2, prev_minutes_3, prev_minutes_4, prev_minutes_5), na.rm = TRUE),
          prev_ict = dplyr::lag(ict_index, n = 1),
          prev_value = dplyr::lag(value, n = 1),
-         prev_starts = dplyr::lag(starts, n = 1))
+         prev_starts = dplyr::lag(starts, n = 1),
+         prev_selected = dplyr::lag(selected, n=1))
 ```
 
 ```{r}
@@ -74,60 +103,30 @@ player_df <- left_join(pd2, player_info_sel) |>
   left_join(teams_opp, by = c("opponent_team" = "team_id")) 
 
 model_df <- player_df |>
+  filter(round > 6) |>
   ungroup() |>
-    filter(average_minutes5 > 30, selected > 5000) |>
+    filter(average_minutes5 > 30, selected > 15000) |>
   mutate(position = case_when(position == 1 ~ "GK", position == 2 ~ "DEF", position == 3 ~ "MID", position == 4 ~ "FWD")) |>
    mutate(was_home = factor(was_home)) |>
   mutate(prev_ict = as.numeric(prev_ict)) |>
+  mutate(team_name = factor(team_name),
+         opp_team_name = factor(opp_team_name))|>
   select(element,fixture, points_cat, round,playername, total_points, position, team_name, opp_team_name, was_home,  starts_with("prev"), starts_with("average")) 
 
 ```
 
 ```{r}
-m1 <- model_df |> lm(formula = total_points ~ position + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5)
-
-summary(m1)
-
-
-m2 <- model_df |> filter(total_points > -1) |>glm(formula = total_points ~ position + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5, family = "poisson")
-
-m3 <- model_df |> lmerTest::lmer(formula = total_points ~ position + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + average_points5 + average_minutes5 + (1 | team_name) + (1 | opp_team_name))
-```
-
-```{r}
-m1_pred <-predictions(m1)
-m2_pred <-predictions(m2)
-m3_pred <-predictions(m3)
-m1_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point(alpha = 0.4) + geom_abline(slope = 1, intercept = 0)
-
-m2_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point()+ geom_smooth()
-
-m3_pred |> ggplot(aes(x = total_points, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_point(alpha = 0.4) + geom_abline(slope = 1, intercept = 0)
-```
-
-```{r}
-metrics(m1_pred, truth = total_points, estimate = estimate)
-metrics(m3_pred, truth = total_points, estimate = estimate)
-```
-
-```{r}
-
-model_df |>
-  filter(round == max(round)) |>
-ggplot(aes(x = average_minutes5, y = total_points)) +
-  geom_point(alpha = 0.6)
-```
-
-```{r}
 set.seed(123)
-splits <- initial_split(model_df, prop = 0.8, strata = round)
+splits <- initial_split(model_df, prop = 0.8, strata = points_cat)
 
 df_train <- training(splits)
 df_test <- testing(splits)
 ```
 
 ```{r}
-xgb_recipe <- recipe(points_cat ~ position + team_name + opp_team_name + was_home + prev_ict +prev_value + prev_starts+ prev_points_1 + prev_minutes_1 + prev_points_2 + prev_minutes_2 + prev_minutes_3 + prev_minutes_4 + prev_points_3 + prev_points_4 + prev_points_5 + average_points5 + average_minutes5, data = df_train) |> 
+df_train2 <- df_train |> select(-playername, -element, -fixture, -total_points, - round)
+
+xgb_recipe <- recipe(points_cat ~ ., data = df_train2) |> 
   step_center(all_numeric(), -all_outcomes()) |>
   step_scale(all_numeric(), -all_outcomes()) |> 
   step_dummy(all_nominal(), -all_outcomes())
@@ -137,9 +136,9 @@ xgb_recipe <- recipe(points_cat ~ position + team_name + opp_team_name + was_hom
 
 ```{r}
 xgb_model <- boost_tree(
-  tree_depth = 7,
-  trees = 1000,
-  mtry = 0.9
+  tree_depth = 4,
+  trees = 400,
+  mtry = 0.5, 
 ) |>
   set_mode("classification") |>
   set_engine("xgboost", 
@@ -158,7 +157,7 @@ xgb_wf <- workflow() |>
 ```
 
 ```{r}
-fitted_workflow <- fit(object = xgb_wf, data =  df_train,
+fitted_workflow <- fit(object = xgb_wf, data =  df_train2,
                          control = control_workflow(control_parsnip = control_parsnip(verbosity = 2L)))
 
 ```
@@ -170,7 +169,17 @@ df_test$pred <- pred$.pred_class
 df_test$points_cat <- factor(df_test$points_cat)
 
 
-metrics(df_test, truth= factor(points_cat), estimate = factor(pred))
+predtr <- predict(fitted_workflow, df_train)
+
+df_train$pred <- predtr$.pred_class
+df_train$points_cat <- factor(df_train$points_cat)
+
+metrics(df_train, truth = points_cat, estimate = pred)
+metrics(df_test, truth= points_cat, estimate = pred)
+```
+
+```{r}
+conf_mat(df_test, truth= points_cat, estimate = pred)
 ```
 
 \
@@ -187,7 +196,7 @@ varimp <- xgboost::xgb.importance(feature_names = fitted_workflow$fit$fit$fit$fe
 varimp_plot <- varimp|>
   as_tibble() |>
   arrange(desc(Gain)) |>
-  filter(row_number() <= 10) |>
+  filter(row_number() <= 12) |>
   ggplot(aes(x = reorder(Feature, Gain), y = Gain, fill = Gain)) +
   geom_col() +
     geom_text(aes(label = round(Gain, 2)), nudge_y = 0.03) +
@@ -196,4 +205,11 @@ varimp_plot <- varimp|>
   scale_fill_viridis_c()
 
 varimp_plot
+```
+
+```{r}
+# To improve:
+# Add fixture difficulty stat
+# create xP depending on if they are attackers or defenders e.g. xG x5 for midfielders
+#create net xG/xGC
 ```
