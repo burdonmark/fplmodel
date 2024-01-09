@@ -129,7 +129,7 @@ df_train2 <- df_train |> select(-playername, -element, -fixture, -total_points, 
 xgb_recipe <- recipe(points_cat ~ ., data = df_train2) |> 
   step_center(all_numeric(), -all_outcomes()) |>
   step_scale(all_numeric(), -all_outcomes()) |> 
-  step_dummy(all_nominal(), -all_outcomes())
+  step_dummy(one_hot = TRUE, all_nominal(), -all_outcomes())
 
 
 ```
