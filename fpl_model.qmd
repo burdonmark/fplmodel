@@ -139,6 +139,7 @@ xgb_model <- boost_tree(
   tree_depth = 4,
   trees = 400,
   mtry = 0.5, 
+  learn_rate = 0.001
 ) |>
   set_mode("classification") |>
   set_engine("xgboost", 
@@ -212,4 +213,8 @@ varimp_plot
 # Add fixture difficulty stat
 # create xP depending on if they are attackers or defenders e.g. xG x5 for midfielders
 #create net xG/xGC
+```
+
+```{r}
+fplscrapR::get_player_info("Pervis Estupinan")
 ```

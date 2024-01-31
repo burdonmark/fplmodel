@@ -1,0 +1,228 @@
+---
+title: "Bayesian FPL"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(fplscrapR)
+library(tidymodels)
+library(bayesian)
+library(brms)
+library(tidybayes)
+library(rstanarm)
+library(lme4)
+library(ggdist)
+library(marginaleffects)
+```
+
+```{r}
+ load("player_details.Rdata")
+```
+
+```{r}
+pd2 <- player_details |>
+  mutate(across(starts_with("expected"), as.numeric)) |>
+  mutate(ict_index = as.numeric(ict_index))
+
+player_info <- get_player_info()
+
+player_info_sel <- player_info |>
+  select(playername, team_code, "position" = element_type)
+
+teams <- get_fdr() |> select("team_code" = code,
+                             "team_name" = short_name,
+                             "team_id" = id)
+teams_opp <- teams |>
+  rename("opp_team_name" = team_name)
+
+```
+
+```{r}
+player_df <- left_join(pd2, player_info_sel) |> 
+  left_join(teams, by = "team_code") |>
+  left_join(teams_opp, by = c("opponent_team" = "team_id")) 
+
+model_df <- player_df |>
+  ungroup() |>
+    filter( selected > 15000) |>
+    filter(minutes >=45) |>
+  mutate(position = case_when(position == 1 ~ "GK", position == 2 ~ "DEF", position == 3 ~ "MID", position == 4 ~ "FWD")) |>
+   mutate(was_home = factor(was_home)) |>
+  mutate(team_name = factor(team_name),
+         opp_team_name = factor(opp_team_name),
+         threat = as.numeric(threat),
+         creativity = as.numeric(creativity),
+         influence = as.numeric(influence),
+         playername = factor(playername)) 
+
+goals_df <- model_df |>
+  select(element, goals_scored, assists, round, fixture, team_name, opp_team_name, position, creativity, influence, threat, playername) |>
+
+  mutate(creativity = creativity / 10, influence = influence / 10, threat = threat /10) |>
+  mutate(element = factor(element),
+         goals_scored_f = factor(goals_scored, ordered = TRUE),
+         assists_f = factor(assists, ordered = TRUE)) |>
+  mutate(across(where(is.character), factor))
+
+df_train <- goals_df |>
+  filter(round < 18) 
+
+
+df_test <- goals_df |> filter(round > 17)
+
+
+
+```
+
+```{r}
+model_goals <- brm(data = df_train,
+      family = cumulative(probit),
+      formula = goals_scored_f ~ team_name + opp_team_name + position + creativity + influence + threat + (1 | playername),
+      prior(normal(0, 4), class = Intercept),
+      iter = 3000, warmup = 1000, chains = 4, cores = 4,
+      seed = 123) #pp_check is great. not clear how good the predictions are
+```
+
+```{r}
+pred_goals <- predictions(model_goals, df_test, allow_new_levels = TRUE) |>
+  mutate(goals_scored = factor(goals_scored)) |>
+  group_by(rowid) |>
+  arrange(desc(estimate)) |>
+  slice(1) |>
+  mutate(predicted_goals = factor(group))
+```
+
+```{r}
+pred_goals |> filter(position != "GK") |>ungroup() |> conf_mat(goals_scored, predicted_goals) |> autoplot("heatmap")
+```
+
+```{r}
+metrics(pred_goals |> ungroup(), goals_scored, predicted_goals)
+recall(pred_goals |> ungroup(), goals_scored, predicted_goals)
+precision(pred_goals |> ungroup(), goals_scored, predicted_goals)
+```
+
+```{r}
+#Negative-binomial assists model
+#May be worth trying poisson and zero-inflated poisson
+model_assists1 <- stan_glmer(data = df_train,
+      family = neg_binomial_2,
+      formula = assists ~ team_name + opp_team_name + position + creativity + influence + threat + (1 | playername),
+      iter = 4000, warmup = 1000, chains = 4, cores = 4,
+      seed = 123) 
+
+   summary(model_assists1)
+   pp_check(model_assists1, nreps = 5)
+   
+```
+
+```{r}
+pred_assists1 <- predictions(model_assists1, newdata = df_train, allow_new_levels = TRUE, type = "response") 
+  
+  
+pred_assists1 |> ggplot(aes(x = estimate, y = assists)) + geom_point(alpha = 0.1) + geom_abline(slope = 1) + geom_smooth()
+  
+pred_assists1$predicted_assists <- factor(round(pred_assists1$estimate, 0 )-1)
+levels(pred_assists1$predicted_assists) <- c("0", "1", "2", "3", "4")
+  
+pred_assists1 |> metrics(truth = assists_f, estimate = predicted_assists)
+   pred_assists1 |> metrics(truth = assists, estimate = estimate)
+   pred_assists1 |>ungroup() |>filter(position != "GK") |> conf_mat(truth = assists_f, estimate = predicted_assists) |> autoplot("heatmap")
+```
+
+```{r}
+
+df_train <- df_train |> mutate(weights = 0.6 + 0.4 *(round / max(round)))
+#ordinal model with brms - worked well for goals but not for assists somehow. try tweaking this with rstanarm
+model_assists <- stan_polr(data = df_train,
+      formula = assists_f ~ team_name + opp_team_name + position + creativity + influence + threat,
+      prior = R2(0.5), prior_counts = dirichlet(3), 
+      iter = 3000, warmup = 1000, chains = 4, cores = 4,
+      seed = 123) 
+```
+
+```{r}
+#Model is too pessimistic - doesn't predict more than one assist, and rarely that. Priors?
+
+pred_assists_draws <- predicted_draws(model_assists, newdata = df_train)
+
+pred_assists_summarised <- pred_assists_draws |> 
+  mutate(.prediction = as.numeric(.prediction)) |>
+  group_by(.row) |>
+  mutate(median_assists = median(.prediction),
+                                    mean_assists = mean(.prediction)) |>
+  group_by(.row) |>
+  slice(1)
+
+pred_assists_summarised |> group_by(assists, median_assists) |> count()
+
+
+
+#levels(pred_assists$predicted_assists) <- c(levels(pred_assists$predicted_assists), "2", "3", "4")
+
+#conf_mat(pred_assists, truth = assists_f, estimate = predicted_assists) |> autoplot("heatmap")
+
+#metrics(pred_assists, truth = assists, estimate = estimate)
+```
+
+```{r}
+
+
+myprior <- set_prior(prior = "normal (2,0.5)", class = "Intercept")
+
+model_assists_nb <- brm(assists ~ position + creativity  + influence  + threat,  data = df_train, prior = myprior, family = negbinomial(),  cores = 4)
+
+# model_assists_brm <- brm(data = df_train,
+#       family = cumulative(logit),
+#       formula = bf( assists_f ~ team_name + opp_team_name + position + creativity + influence + threat) + lf(disc ~ team_name + opp_team_name + position + creativity + influence + threat),
+#       iter = 5000, warmup = 1000, chains = 4, cores = 4,
+#       seed = 123) 
+#90% are 0
+#98.5% are 0-1
+#99% are 0-2
+#100% are 0-3
+
+```
+
+```{r}
+pred_nb <- predictions(model_assists_nb, df_test, type = "response")
+```
+
+```{r}
+pp_check(model_assists_zinb, newdata = df_train |> filter(round > 6))
+pp_check(model_assists_zinb, type = "stat")
+
+pp_check(model_assists_zinb, type = "stat_grouped", group = "position")
+```
+
+```{r}
+metrics(pred_nb, truth = assists, estimate = estimate)
+
+pred_nb$prediction_f <- factor(round(pred_nb$estimate, 0 ))
+table(pred_nb$prediction_f)
+table(pred_nb$assists)
+
+pred_nb |> group_by(prediction_f, assists_f) |> count() |> View()
+```
+
+\
+
+```{r}
+model_assists_hurdle <- brm(
+  bf(assists ~ position + creativity  + influence  + threat,
+     hu ~  position + creativity + influence  + threat),
+  data = df_train, 
+  cores = 4,
+  family = hurdle_cumulative(),
+  silent = 2
+)
+
+pred_hu <- pred(model_assists_hurdle, df_train, type = "response" )
+
+pred_hu_summarised <- pred_hu |> group_by(rowid) |> arrange(desc(estimate)) |> slice(1)
+
+pred_hu$prediction_f <- factor(round(pred_hu$estimate, 0 ))
+conf_mat(pred_hu, truth = assists_f, estimate = prediction_f)
+```
