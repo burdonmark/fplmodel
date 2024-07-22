@@ -28,21 +28,105 @@ fpl_ret$elements
 ```
 
 ```{r}
-cleaned_players <- read_csv(file = "../../Documents and Settings/kathr/Downloads/cleaned_players.csv")
+cleaned_players <- read_csv(file = "../Fantasy-Premier-League/data/2023-24/cleaned_players.csv")
 ```
 
 ```{r}
-cleaned_players -> df
+cleaned_players -> last_season
 
-m1 <- lm(data = df, formula = total_points ~ creativity + influence + threat)
+# Add current prices to last season's data
+combined <- last_season |> left_join(player |> select(first_name, second_name, "now_cost_new" = now_cost ,  points_per_game), by= c("first_name", "second_name"))
 
-m2 <- lm(data = df, formula = total_points ~ creativity * influence * threat)
+combined2 <- combined|> mutate(ppm_per_cost = as.numeric(points_per_game) / as.numeric(now_cost_new / 100))
 
-m3 <- mgcv::gam(formula = total_points ~ s(creativity, k = 5, bs = "cr") + s(influence, k = 5, bs = "cr") + s(threat, k = 5, bs = "cr"), data = df)
+library(ggrepel)
+combined2 |>
+  filter(minutes > (0.5 * max(minutes, na.rm = TRUE))) |> 
+  ggplot(aes(x = minutes, 
+             y = ppm_per_cost, 
+             colour = element_type)) + 
+  geom_smooth(method = "lm",
+              se = FALSE, alpha = 0.4) + 
+  geom_label_repel(aes(label = second_name), alpha = 0.8) +
+  labs(title = "Points per match (2023/24) per £m (2024/25 prices)",
+       subtitle = "Players who played a majority of minutes",
+       y = "Points per match per £m",
+       x = "Minutes played",
+       colour = "Position") +
+  theme_bw() +
+  facet_wrap(~element_type)
+# 
+# m1 <- lm(data = df, formula = total_points ~ creativity + influence + threat)
+# 
+# m2 <- lm(data = df, formula = total_points ~ creativity * influence * threat)
+# 
+# m3 <- mgcv::gam(formula = total_points ~ s(creativity, k = 5, bs = "cr") + s(influence, k = 5, bs = "cr") + s(threat, k = 5, bs = "cr"), data = df)
 ```
 
 ```{r}
-df$residuals_abs <- residuals.gam(m3) |> abs()
-df$residuals <- residuals.gam(m3)
-df$pred <- predict(m3, df)
+
+combined3 <- combined2 |>
+  mutate(total_per_cost = as.numeric(total_points) / as.numeric(now_cost_new / 100))
+
+combined3 |>
+  filter(minutes > (0.5 * max(minutes, na.rm = TRUE))) |> 
+  ggplot(aes(x = minutes, 
+             y = total_per_cost, 
+             colour = element_type)) + 
+  geom_smooth(method = "lm",
+              se = FALSE, alpha = 0.4) + 
+  geom_point() +
+  geom_label_repel(aes(label = second_name), alpha = 0.8) +
+  labs(title = "Total points (2023/24) per £m (2024/25 prices)",
+       subtitle = "Players who played a majority of minutes",
+       y = "Total points per £m",
+       x = "Minutes played",
+       colour = "Position") +
+  theme_bw() +
+  facet_wrap(~element_type)
 ```
+
+```{r}
+gameweeks_csvs_paths <- list.files(path = "../Fantasy-Premier-League/data/2023-24/gws/", pattern = "^gw", full.names = TRUE)
+
+gameweeks_csvs_list <- purrr::map(.x = gameweeks_csvs_paths, .f = rio::import)
+
+combined_df <- purrr::imap_dfr(gameweeks_csvs_list, ~ mutate(.x, gw = .y))
+```
+
+```{r}
+
+original_prices <- combined_df |>
+  filter(gw == 1) |>
+  select(name, "original_price" = value)
+
+player2 <- player |> select(first_name, second_name,
+                 "influence_new" = influence,
+                 "creativity_new" = creativity,
+                 "threat_new" = threat) |>
+  mutate(name = paste0(first_name, " ", second_name)) |>
+  left_join(original_prices)
+
+combined_df2 <- combined_df |>
+  left_join(player2 |> select(name,
+                             influence_new,
+                             creativity_new,
+                             threat_new,
+                             original_price),
+            by = c("name"))
+
+combined_df3 <- combined_df2 |>
+  mutate(total_points = if_else(total_points < 0, 0, total_points))
+
+m1 <- lme4::lmer(data = combined_df2, formula = total_points ~ position + original_price + was_home +(1 | team) + (1 | opponent_team))
+
+m2 <- lme4::lmer(data = combined_df2, formula = total_points ~ position *  was_home + (1 | team) + (1 | name) + (1 | opponent_team))
+
+m3 <- lme4::glmer(data = combined_df3,
+                  family = poisson(link = "log"), formula = total_points ~ position *  was_home + (1 | team) + (1 | name) + (1 | opponent_team))
+
+modelsummary::modelsummary(models = list(m1, m2, m3))
+
+```
+
+Idea: Bayesian model based on previous 4 GWs but priors set based on 2023/24 data, allowing prediction in first GWs.
