@@ -1,0 +1,48 @@
+---
+title: "fplnew"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+```
+
+```{r}
+url <- "https://fantasy.premierleague.com/api/bootstrap-static"
+fpl_ret <- fromJSON(url)
+summary(fpl_ret)
+```
+
+```{r}
+player <- fpl_ret$elements
+team <- fpl_ret$teams
+pos <- fpl_ret$element_types
+events <- fpl_ret$events
+
+fpl_ret$element_stats
+
+fpl_ret$elements
+
+```
+
+```{r}
+cleaned_players <- read_csv(file = "../../Documents and Settings/kathr/Downloads/cleaned_players.csv")
+```
+
+```{r}
+cleaned_players -> df
+
+m1 <- lm(data = df, formula = total_points ~ creativity + influence + threat)
+
+m2 <- lm(data = df, formula = total_points ~ creativity * influence * threat)
+
+m3 <- mgcv::gam(formula = total_points ~ s(creativity, k = 5, bs = "cr") + s(influence, k = 5, bs = "cr") + s(threat, k = 5, bs = "cr"), data = df)
+```
+
+```{r}
+df$residuals_abs <- residuals.gam(m3) |> abs()
+df$residuals <- residuals.gam(m3)
+df$pred <- predict(m3, df)
+```
